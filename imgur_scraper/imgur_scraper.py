@@ -3,10 +3,52 @@ import csv
 import datetime
 import json
 import os
+import re
 
 from requests_html import HTMLSession
 
 from .utils import Convert
+
+
+def get_more_details_of_post(post_url: str) -> json:
+    """
+    :param post_url: the url of an imgur post
+    :return: Details like Virality-score, username etc in JSON format
+    """
+    details = {}
+    try:
+        request = HTMLSession().get(post_url)
+
+        # some times, request isn't properly made, hence call again.
+        if len(request.html.find('script')) < 18:
+            request = HTMLSession().get(post_url)
+
+            return details
+            # handle when its not there at all
+
+        regex = 'item: ({.+} )'  # regex to isolate the `item` dict.
+        # 18th script tag has the `item` dict. this is tested on more than 1500 links.
+        matched = re.search(regex, request.html.find(
+            'script')[18].text).group(0)
+        item = json.loads(matched[5:])
+
+        details['username'] = item['account_url']
+        details['comment_count'] = item['comment_count']
+        details['downs'] = item['downs']
+        details['ups'] = item['ups']
+        details['points'] = item['points']
+        details['score'] = item['score']
+        details['timestamp'] = item['timestamp']
+        details['views'] = item['views']
+        details['favorite_count'] = item['favorite_count']
+        details['hot_datetime'] = item['hot_datetime']
+        details['nsfw'] = item['nsfw']
+        details['platform'] = 'Not Detected' if item['platform'] == None else item['platform']
+        details['virality'] = item['virality']
+    except Exception as e:
+        print(e)
+
+    return details
 
 
 def get_viral_posts_from(start_date: str, end_date: str, provide_details: bool) -> json:
@@ -27,14 +69,12 @@ def get_viral_posts_from(start_date: str, end_date: str, provide_details: bool) 
         if r.html.find(".images-header-main"):
             print(
                 "Grabbing "
-                + " ".join(r.html.find(".images-header-main")[0].full_text.split())
+                + " ".join(r.html.find(".images-header-main")
+                           [0].full_text.split())
             )
         while not r.html.find("#nomore"):
             for entries in r.html.find(".post"):
-                if provide_details:
-                    details = get_more_details_of_post(f"https://imgur.com{entries.find('.image-list-link')[0].attrs['href']}")
-
-                yield {
+                less_details = {
                     "title": entries.find(".hover > p")[0].full_text,
                     "url": f"https://imgur.com{entries.find('.image-list-link')[0].attrs['href']}",
                     "points": entries.find(".point-info-points > span")[0].full_text,
@@ -43,6 +83,12 @@ def get_viral_posts_from(start_date: str, end_date: str, provide_details: bool) 
                     "views": entries.find(".post-info")[0].full_text.strip().split()[2],
                     "date": convert.from_days_ago(day_count),
                 }
+                if provide_details:
+                    more_details = get_more_details_of_post(
+                        f"https://imgur.com{entries.find('.image-list-link')[0].attrs['href']}")
+                    yield dict(more_details, **less_details)
+                else:
+                    yield less_details
             counter += 1
             r = HTMLSession().get(
                 f"https://imgur.com/gallery/hot/viral/page/{days_ago}/hit?scrolled&set={counter}"
@@ -57,7 +103,8 @@ def main():
         description="Retrieve Imgur's Viral Posts",
     )
     parser._optionals.title = "COMMAND"
-    parser.add_argument("--version", action="version", version="%(prog)s 0.1.14")
+    parser.add_argument("--version", action="version",
+                        version="%(prog)s 0.1.14")
     parser.add_argument(
         "--date",
         action="store",
@@ -108,12 +155,19 @@ def main():
 
     if to_csv:
         try:
-            file_name = os.path.join(path, f"{start_date}_to_{end_date}_imgur_data.csv")
+            file_name = os.path.join(
+                path, f"{start_date}_to_{end_date}_imgur_data.csv")
             with open(file_name, "x", newline="", encoding="utf-8") as csvfile:
-                fieldnames = ["title", "url", "points", "tags", "type", "views", "date"]
+                if provide_details:
+                    fieldnames = ["title", "url", "points", "tags", "type", "views", "date", "username", "comment_count", "downs",
+                                  "ups", "points", "score", "timestamp", "views", "favorite_count", "hot_datetime", "nsfw", "platform", "virality"]
+                else:
+                    fieldnames = ["title", "url", "points",
+                                  "tags", "type", "views", "date"]
                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
                 writer.writeheader()
-                writer.writerows(get_viral_posts_from(start_date, end_date, provide_details))
+                writer.writerows(get_viral_posts_from(
+                    start_date, end_date, provide_details))
             print(f"CSV saved in {os.path.abspath(file_name)}")
         except FileExistsError as f:
             print(f)
